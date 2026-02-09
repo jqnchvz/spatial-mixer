@@ -43,13 +43,26 @@ Before starting work, **thoroughly read the task description** in Jira. Each tas
 
 When you begin a task:
 
-1. **Transition to "In Progress"** in Jira
-2. **Use the Claude Code Prompt** from the task description - it's specifically designed for that task
-3. **Create a feature branch** following the naming convention: `feature/SPAT-XX-brief-description`
+1. **Create a feature branch** with the naming convention: `SPAT-XX-brief-description`
+   - Start with the Jira task code (e.g., `SPAT-12`)
+   - Add a brief description using underscores or hyphens (e.g., `add_volume_ui` or `menubar-extra`)
+   - Keep it concise but descriptive
+2. **Transition to "In Progress"** in Jira
+3. **Use the Claude Code Prompt** from the task description - it's specifically designed for that task
 
-**Example:**
+**Branch Naming Examples:**
 ```bash
-git checkout -b feature/SPAT-12-menubar-extra
+git checkout -b SPAT-12-menubar-extra
+git checkout -b SPAT-13-add_volume_ui
+git checkout -b SPAT-19-core-audio-taps
+git checkout -b SPAT-21-spatial-positioning
+```
+
+**⚠️ Important:** Always create the branch from an up-to-date `main` branch:
+```bash
+git checkout main
+git pull origin main
+git checkout -b SPAT-XX-description
 ```
 
 #### 4. During Development
@@ -102,7 +115,7 @@ When the PR is merged:
 ```bash
 git checkout main
 git pull origin main
-git branch -d feature/SPAT-12-menubar-extra
+git branch -d SPAT-12-menubar-extra
 gh pr list --state merged --limit 1  # Verify merge
 ```
 
@@ -209,7 +222,7 @@ This app requires specific permissions and entitlements:
 
 **Branch Strategy:**
 - `main` - Production-ready code
-- `feature/SPAT-XX-description` - Feature branches for each task
+- `SPAT-XX-description` - Feature branches for each task (e.g., `SPAT-12-menubar-extra`, `SPAT-13-add_volume_ui`)
 
 **Commit Messages:**
 ```
