@@ -8,6 +8,8 @@
 import SwiftUI
 
 struct MenuBarView: View {
+    @StateObject private var permissions = AudioPermissions()
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header
@@ -15,6 +17,38 @@ struct MenuBarView: View {
                 .font(.headline)
             
             Divider()
+            
+            // Permission Status Section
+            if !permissions.screenCaptureGranted {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("Permission Required")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
+                    
+                    Text("Screen recording permission is needed to capture app audio.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    Button("Grant Permission") {
+                        permissions.requestPermission()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    
+                    Button("Open System Settings") {
+                        permissions.openSystemSettings()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                }
+                .padding(.vertical, 4)
+                
+                Divider()
+            }
             
             // Audio Sources Section
             VStack(alignment: .leading, spacing: 6) {
