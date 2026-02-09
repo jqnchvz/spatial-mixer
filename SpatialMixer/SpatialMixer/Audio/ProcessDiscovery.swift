@@ -14,6 +14,13 @@ class ProcessDiscovery: ObservableObject {
     /// List of currently running apps (filtered)
     @Published var runningApps: [AppInfo] = []
 
+    /// Filter to only show likely audio-capable apps
+    @Published var filterAudioAppsOnly = true {
+        didSet {
+            discoverApps()
+        }
+    }
+
     private var launchObserver: NSObjectProtocol?
     private var terminateObserver: NSObjectProtocol?
 
@@ -66,7 +73,69 @@ class ProcessDiscovery: ObservableObject {
             return false
         }
 
+        // If filtering for audio apps only, check if likely audio-capable
+        if filterAudioAppsOnly {
+            return isLikelyAudioCapable(app)
+        }
+
         return true
+    }
+
+    /// Check if an app is likely to be audio-capable
+    private func isLikelyAudioCapable(_ app: NSRunningApplication) -> Bool {
+        guard let bundleID = app.bundleIdentifier else { return false }
+
+        // Known audio-capable app patterns
+        let audioAppPatterns = [
+            // Browsers (YouTube, web audio, etc.)
+            "safari",
+            "chrome",
+            "firefox",
+            "edge",
+            "brave",
+            "arc",
+            "opera",
+
+            // Music & Media Players
+            "music",
+            "spotify",
+            "itunes",
+            "tv", // Apple TV
+            "quicktime",
+            "vlc",
+            "iina",
+
+            // Communication
+            "facetime",
+            "zoom",
+            "teams",
+            "slack",
+            "discord",
+            "skype",
+            "webex",
+
+            // Podcasts & Audio
+            "podcasts",
+            "overcast",
+            "audible",
+            "soundcloud",
+
+            // Video & Streaming
+            "netflix",
+            "hulu",
+            "youtube",
+            "twitch",
+
+            // Creative Apps
+            "logic",
+            "garageband",
+            "ableton",
+            "reaper",
+            "audacity",
+        ]
+
+        let lowercaseID = bundleID.lowercased()
+        return audioAppPatterns.contains { lowercaseID.contains($0) }
     }
 
     /// Set up notification observers for app launch/terminate
@@ -78,22 +147,12 @@ class ProcessDiscovery: ObservableObject {
             forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
-                return
-            }
-
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self = self,
-                      self.shouldIncludeApp(app) else {
-                    return
-                }
+                guard let self = self else { return }
 
-                let appInfo = AppInfo(from: app)
-                if !self.runningApps.contains(where: { $0.id == appInfo.id }) {
-                    self.runningApps.append(appInfo)
-                    self.runningApps.sort { $0.name < $1.name }
-                }
+                // Refresh the entire list to respect current filter setting
+                self.discoverApps()
             }
         }
 
@@ -102,14 +161,12 @@ class ProcessDiscovery: ObservableObject {
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
-                return
-            }
-
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                self.runningApps.removeAll { $0.id == app.processIdentifier }
+
+                // Refresh the entire list to respect current filter setting
+                self.discoverApps()
             }
         }
     }
