@@ -23,10 +23,12 @@ struct MenuBarView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.orange)
+                            .foregroundStyle(.yellow)
+                            .imageScale(.medium)
                         Text("Permission Required")
                             .font(.subheadline)
                             .fontWeight(.medium)
+                            .foregroundColor(.primary)
                     }
                     
                     Text("Screen recording permission is needed to capture app audio.")
