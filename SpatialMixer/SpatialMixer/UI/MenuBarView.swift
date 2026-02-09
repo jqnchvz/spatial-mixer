@@ -9,7 +9,8 @@ import SwiftUI
 
 struct MenuBarView: View {
     @StateObject private var permissions = AudioPermissions()
-    
+    @StateObject private var processDiscovery = ProcessDiscovery()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header
@@ -55,10 +56,30 @@ struct MenuBarView: View {
                 Text("Audio Sources")
                     .font(.subheadline)
                     .fontWeight(.medium)
-                
-                Text("No apps detected")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+
+                if processDiscovery.runningApps.isEmpty {
+                    Text("No apps detected")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(processDiscovery.runningApps) { app in
+                        HStack(spacing: 8) {
+                            Image(nsImage: app.icon)
+                                .resizable()
+                                .frame(width: 16, height: 16)
+
+                            Text(app.name)
+                                .font(.caption)
+
+                            Spacer()
+
+                            Text("PID: \(app.processID)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
             }
             
             Divider()
