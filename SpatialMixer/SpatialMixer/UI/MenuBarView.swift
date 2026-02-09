@@ -10,24 +10,46 @@ import SwiftUI
 struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Header
             Text("Spatial Mixer")
                 .font(.headline)
             
             Divider()
             
-            Text("No audio sources detected")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            // Audio Sources Section
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Audio Sources")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                
+                Text("No apps detected")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
             
             Divider()
             
-            Button("Quit") {
+            // Settings Section
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Settings")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                
+                Text("Coming soon...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Divider()
+            
+            // Quit Button
+            Button("Quit Spatial Mixer") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
         }
         .padding()
-        .frame(minWidth: 200)
+        .frame(width: 300)
     }
 }
 
