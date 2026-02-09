@@ -261,7 +261,6 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = SpatialMixer/Resources/Info.plist;
-				INFOPLIST_FILE = SpatialMixer/Resources/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -297,7 +296,6 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = SpatialMixer/Resources/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_FILE = SpatialMixer/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
