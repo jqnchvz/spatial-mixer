@@ -22,10 +22,8 @@ struct MenuBarView: View {
             if !permissions.screenCaptureGranted {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .symbolRenderingMode(.multicolor)
-                            .foregroundStyle(Color(red: 1.0, green: 0.8, blue: 0.0))
-                            .imageScale(.large)
+                        Text("⚠️")
+                            .font(.system(size: 18))
                         Text("Permission Required")
                             .font(.subheadline)
                             .fontWeight(.semibold)
