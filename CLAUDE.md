@@ -250,8 +250,8 @@ The project follows a 10-phase development plan. Each phase builds on the previo
 Initial Xcode project, folder structure, basic menu bar app
 
 ### Phase 2: Audio Permissions & Process Discovery (SPAT-2)
-⏳ **Status:** Pending
-Screen recording permission flow, enumerate running apps
+✅ **Status:** Complete
+Screen recording permission flow, enumerate running apps with audio filtering
 
 ### Phase 3: Core Audio Capture (SPAT-3)
 ⏳ **Status:** Pending
@@ -333,6 +333,29 @@ Users can override per-app via UI settings.
 
 ## Troubleshooting
 
+### MenuBarExtra UI Issues
+
+**SF Symbols appear greyed out in MenuBarExtra popover:**
+- MenuBarExtra uses NSVisualEffectView with vibrancy that desaturates SwiftUI colors
+- `.foregroundColor()` and `.foregroundStyle()` modifiers are overridden by system styling
+- **Solution:** Use emoji Unicode characters (e.g., "⚠️") instead of SF Symbols for colored icons
+- Emojis render as colored bitmap glyphs outside SwiftUI's styling pipeline
+
+**Swift 6 concurrency warnings in NSWorkspace observers:**
+- NSWorkspace notification closures run on specified queue but aren't actor-isolated
+- Accessing `@Published` properties from closures requires explicit actor isolation
+- **Solution:** Wrap property access in `Task { @MainActor }` blocks within observer closures
+- Example: `{ _ in Task { @MainActor [weak self] in self?.property = value } }`
+
+### Audio App Detection
+
+**Real-time audio detection:**
+- Detecting which apps are *currently playing audio* requires Core Audio Taps (Phase 3)
+- **Interim solution:** Use heuristic bundle ID pattern matching for likely audio-capable apps
+- Check for common substrings: "spotify", "safari", "chrome", "zoom", "music", etc.
+- Pattern matching is reliable because bundle IDs follow predictable naming conventions
+- Can be refined with user feedback and will be superseded by Core Audio Taps in Phase 3
+
 ### Permission Issues
 If Core Audio Taps fail:
 1. Verify screen recording permission granted
@@ -352,6 +375,10 @@ If build fails:
 2. Clear DerivedData: `rm -rf ~/Library/Developer/Xcode/DerivedData`
 3. Verify deployment target is macOS 14.4+
 4. Check all files are in correct target
+
+**Expected warnings (safe to ignore):**
+- "Copy Bundle Resources build phase contains Info.plist" - Project uses custom Info.plist path
+- "Metadata extraction skipped. No AppIntents.framework dependency" - App doesn't use AppIntents
 
 ## Resources
 
@@ -373,6 +400,7 @@ If build fails:
 When working on this project:
 
 1. **Always check Jira first** - Use the Atlassian MCP plugin to find the next task
+   - Note: Plugin may disconnect frequently, run `/plugin` to reconnect before Jira operations
 2. **Read the full task description** - Contains crucial context and implementation guidance
 3. **Use the Claude Code Prompt** - Each task has a tailored prompt for you
 4. **Update Jira status** - Transition tasks as you progress through the workflow
