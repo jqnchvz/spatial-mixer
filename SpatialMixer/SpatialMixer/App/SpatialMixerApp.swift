@@ -10,8 +10,8 @@ import SwiftUI
 @main
 struct SpatialMixerApp: App {
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra("Spatial Mixer", systemImage: "waveform.circle") {
+            MenuBarView()
         }
     }
 }
