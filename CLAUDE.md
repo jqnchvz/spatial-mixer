@@ -380,6 +380,28 @@ If build fails:
 - "Copy Bundle Resources build phase contains Info.plist" - Project uses custom Info.plist path
 - "Metadata extraction skipped. No AppIntents.framework dependency" - App doesn't use AppIntents
 
+### Multi-Process Browser Audio
+
+Modern browsers (Safari, Chrome, Firefox) use a multi-process architecture where:
+- The main browser process handles UI and coordination
+- Separate helper processes (WebContent, renderer) handle web page rendering and audio playback
+
+**Current Limitation:**
+- Translating the main browser PID to AudioObjectID returns 0 (no audio session)
+- Audio actually plays in helper processes like "Safari Web Content" or "Chrome Helper (Renderer)"
+- Current implementation cannot detect which helper process is playing audio
+
+**Workaround:**
+- Users must manually select the WebContent/helper process from the app list
+- Process names appear as "Safari Web Content", "Google Chrome Helper (Renderer)", etc.
+
+**Future Enhancement:**
+- Implement automatic detection of parent-child process relationships
+- Auto-link helper processes to their parent browser
+- Filter helper processes to show only those with active audio sessions
+
+This limitation does NOT affect single-process audio apps like Music, Spotify, VLC, or most native macOS applications.
+
 ## Resources
 
 **Apple Documentation:**
