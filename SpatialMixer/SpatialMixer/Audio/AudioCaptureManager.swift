@@ -296,9 +296,10 @@ class AudioTap {
                     }
                 }
 
-                DispatchQueue.main.async {
-                    handler(pcmBuffer)
-                }
+                // Call handler directly from IOProc queue
+                // Handler (SpatialAudioEngine.scheduleBuffer) is thread-safe
+                // This reduces latency by ~10-20ms compared to dispatching to main
+                handler(pcmBuffer)
             }
         }
 

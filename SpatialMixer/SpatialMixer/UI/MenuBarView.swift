@@ -12,8 +12,10 @@ struct MenuBarView: View {
     @StateObject private var permissions = AudioPermissions()
     @StateObject private var processDiscovery = ProcessDiscovery()
     @StateObject private var captureManager = AudioCaptureManager()
+    @StateObject private var spatialEngine = SpatialAudioEngine()
 
     @State private var activeTapProcesses: Set<pid_t> = []
+    @State private var engineError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -54,12 +56,40 @@ struct MenuBarView: View {
                 
                 Divider()
             }
-            
+
+            // Engine Status
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(engineStatusColor)
+                    .frame(width: 8, height: 8)
+
+                Text(engineStatusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if let error = engineError {
+                Text("Error: \(error)")
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
             // Audio Sources Section
             VStack(alignment: .leading, spacing: 6) {
-                Text("Audio Sources")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                HStack {
+                    Text("Audio Sources")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    Spacer()
+
+                    Text("\(spatialEngine.activeSourceCount) active")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
 
                 if processDiscovery.runningApps.isEmpty {
                     Text("No apps detected")
@@ -130,6 +160,34 @@ struct MenuBarView: View {
         .frame(width: 300)
     }
 
+    // MARK: - Computed Properties
+
+    private var engineStatusColor: Color {
+        switch spatialEngine.engineStatus {
+        case .stopped:
+            return .gray
+        case .starting:
+            return .orange
+        case .running:
+            return .green
+        case .error:
+            return .red
+        }
+    }
+
+    private var engineStatusText: String {
+        switch spatialEngine.engineStatus {
+        case .stopped:
+            return "Engine Stopped"
+        case .starting:
+            return "Engine Starting..."
+        case .running:
+            return "Engine Running"
+        case .error(let message):
+            return "Engine Error"
+        }
+    }
+
     // MARK: - Tap Management
 
     /// Start capturing audio from an app
@@ -137,14 +195,33 @@ struct MenuBarView: View {
         print("🔵 startTap called for \(app.name) (PID: \(app.processID))")
 
         do {
+            // Start engine if not running
+            if spatialEngine.engineStatus != .running {
+                print("🎵 Starting spatial audio engine...")
+                try spatialEngine.start()
+                engineError = nil
+            }
+
+            // Create Core Audio Tap
             let tap = try captureManager.createTap(for: app.processID)
 
-            // Set up buffer handler to log received audio
+            guard let format = tap.audioFormat else {
+                throw AudioTapError.formatNotAvailable
+            }
+
+            // Add source to spatial engine
+            try spatialEngine.addSource(for: app.processID, format: format)
+
+            // Set up buffer handler to pipe audio to engine
             let appName = app.name
             let processID = app.processID
             var bufferCount = 0
 
-            tap.bufferHandler = { buffer in
+            tap.bufferHandler = { [weak spatialEngine] (buffer: AVAudioPCMBuffer) in
+                // Schedule buffer for spatial playback
+                // This is called from IOProc queue - scheduleBuffer is thread-safe
+                spatialEngine?.scheduleBuffer(buffer, for: processID)
+
                 bufferCount += 1
                 if bufferCount == 1 {
                     print("✅ FIRST BUFFER RECEIVED for \(appName)!")
@@ -152,8 +229,7 @@ struct MenuBarView: View {
                     print("   Frame length: \(buffer.frameLength)")
                     print("   Channel count: \(buffer.format.channelCount)")
                     print("   Sample rate: \(buffer.format.sampleRate) Hz")
-                } else if bufferCount % 100 == 0 {
-                    print("📊 \(appName): \(bufferCount) buffers received")
+                    print("   🎧 Audio now playing through spatial engine")
                 }
             }
 
@@ -161,15 +237,27 @@ struct MenuBarView: View {
             print("✓ Started tap for \(app.name) (PID: \(app.processID))")
 
         } catch {
-            print("✗ Failed to create tap for \(app.name): \(error.localizedDescription)")
+            engineError = error.localizedDescription
+            print("✗ Failed to start tap for \(app.name): \(error.localizedDescription)")
         }
     }
 
     /// Stop capturing audio from an app
     private func stopTap(for processID: pid_t) {
+        // Remove from spatial engine
+        spatialEngine.removeSource(for: processID)
+
+        // Remove Core Audio Tap
         captureManager.removeTap(for: processID)
+
         activeTapProcesses.remove(processID)
         print("✓ Stopped tap for process \(processID)")
+
+        // Stop engine if no more sources
+        if activeTapProcesses.isEmpty {
+            spatialEngine.stop()
+            print("🛑 Stopped engine (no active sources)")
+        }
     }
 }
 
