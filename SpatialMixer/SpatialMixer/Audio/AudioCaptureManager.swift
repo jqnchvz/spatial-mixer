@@ -119,6 +119,10 @@ class AudioTap {
             stereoMixdownOfProcesses: [processObjectID]
         )
 
+        // Mute the process in the system mix so audio routes exclusively
+        // through SpatialMixer's AVAudioEngine (prevents doubling)
+        tapDescription.muteBehavior = .muted
+
         // CRITICAL: Set UUID explicitly (AudioCap does this)
         let uuid = UUID()
         tapDescription.uuid = uuid
