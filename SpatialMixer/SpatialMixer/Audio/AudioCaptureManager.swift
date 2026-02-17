@@ -197,8 +197,8 @@ class AudioTap {
             mElement: kAudioObjectPropertyElementMain
         )
 
-        var outputUID: CFString?
-        var outputUIDSize = UInt32(MemoryLayout<CFString>.size)
+        var outputUID: Unmanaged<CFString>?
+        var outputUIDSize = UInt32(MemoryLayout<Unmanaged<CFString>>.size)
         status = AudioObjectGetPropertyData(
             defaultOutputID,
             &deviceUIDAddress,
@@ -208,7 +208,7 @@ class AudioTap {
             &outputUID
         )
 
-        guard status == noErr, let outputDeviceUID = outputUID as String? else {
+        guard status == noErr, let outputDeviceUID = outputUID?.takeRetainedValue() as String? else {
             throw AudioTapError.deviceNotFound
         }
 

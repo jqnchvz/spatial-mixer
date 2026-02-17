@@ -183,7 +183,7 @@ struct MenuBarView: View {
             return "Engine Starting..."
         case .running:
             return "Engine Running"
-        case .error(let message):
+        case .error:
             return "Engine Error"
         }
     }
