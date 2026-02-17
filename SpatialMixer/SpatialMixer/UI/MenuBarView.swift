@@ -158,6 +158,11 @@ struct MenuBarView: View {
         }
         .padding()
         .frame(width: 300)
+        .onChange(of: spatialEngine.resetGeneration) { _ in
+            // Engine wiped all nodes on device change — clear captured UI state
+            activeTapProcesses.removeAll()
+            captureManager.removeAllTaps()
+        }
     }
 
     // MARK: - Computed Properties

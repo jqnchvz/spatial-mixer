@@ -35,6 +35,9 @@ class SpatialAudioEngine: ObservableObject {
 
     @Published private(set) var engineStatus: EngineStatus = .stopped
     @Published private(set) var activeSourceCount: Int = 0
+    /// Incremented each time a device change forces a full engine reset.
+    /// MenuBarView observes this to clear its captured-source state.
+    @Published private(set) var resetGeneration: Int = 0
 
     // MARK: - Audio Engine Components
 
@@ -42,7 +45,6 @@ class SpatialAudioEngine: ObservableObject {
     private let environmentNode = AVAudioEnvironmentNode()
 
     /// Standard engine format: 48kHz stereo Float32 non-interleaved
-    /// This matches most modern audio sources and provides optimal quality
     private let engineFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 48000,
@@ -52,8 +54,14 @@ class SpatialAudioEngine: ObservableObject {
 
     // MARK: - Source Management
 
-    /// Maps process IDs to their audio source nodes
+    /// Main-actor dictionary — only written from @MainActor context.
     private var audioSources: [pid_t: AudioSourceNode] = [:]
+
+    /// Shadow dictionary for IOProc-queue reads in scheduleBuffer.
+    /// Written from @MainActor (add/remove source), read from IOProc queue.
+    /// The read/write windows don't overlap in practice (sources change rarely
+    /// compared to the continuous buffer scheduling rate).
+    nonisolated(unsafe) private var sourceNodesForScheduling: [pid_t: AudioSourceNode] = [:]
 
     /// Configuration change observer
     private var configChangeObserver: NSObjectProtocol?
@@ -66,8 +74,6 @@ class SpatialAudioEngine: ObservableObject {
     }
 
     deinit {
-        // Note: deinit is nonisolated, but we can safely access engine
-        // since the object is being deallocated
         if engine.isRunning {
             engine.stop()
         }
@@ -78,53 +84,32 @@ class SpatialAudioEngine: ObservableObject {
 
     // MARK: - Engine Lifecycle
 
-    /// Set up the audio engine graph: PlayerNodes → Mixer → Environment → Output
+    /// Connect the static part of the graph: EnvironmentNode → MainMixer.
+    /// Must be called after any AVAudioEngineConfigurationChange wipes the graph.
     private func setupEngine() {
-        // Attach environment node to engine
         engine.attach(environmentNode)
+        engine.connect(environmentNode, to: engine.mainMixerNode, format: engineFormat)
 
-        // Connect environment node to main mixer
-        // Environment node handles 3D spatial positioning with HRTF
-        engine.connect(
-            environmentNode,
-            to: engine.mainMixerNode,
-            format: engineFormat
-        )
-
-        // Configure environment node for optimal spatial audio
         environmentNode.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
         environmentNode.listenerAngularOrientation = AVAudio3DAngularOrientation(
-            yaw: 0,
-            pitch: 0,
-            roll: 0
+            yaw: 0, pitch: 0, roll: 0
         )
-
-        // Use high-quality HRTF rendering for best spatial accuracy
-        // HRTF (Head-Related Transfer Function) simulates how ears perceive 3D sound
+        // HRTF (Head-Related Transfer Function) — realistic 3D spatial rendering
         environmentNode.renderingAlgorithm = .HRTFHQ
 
-        print("🎵 Audio engine configured with spatial processing")
+        print("🎵 Audio engine graph configured")
     }
 
     /// Start the audio engine
     func start() throws {
-        guard engineStatus != .running else {
-            print("⚠️ Engine already running")
-            return
-        }
+        guard engineStatus != .running else { return }
 
         engineStatus = .starting
-
         do {
-            // Prepare engine for rendering
             engine.prepare()
-
-            // Start the engine - this begins audio processing
             try engine.start()
-
             engineStatus = .running
-            print("✅ Audio engine started successfully")
-
+            print("✅ Audio engine started")
         } catch {
             engineStatus = .error(error.localizedDescription)
             throw SpatialAudioEngineError.engineStartFailed(underlying: error)
@@ -135,70 +120,43 @@ class SpatialAudioEngine: ObservableObject {
     func stop() {
         guard engineStatus == .running else { return }
 
-        // Stop all player nodes first
         for source in audioSources.values {
             source.playerNode.stop()
         }
-
-        // Stop the engine
         engine.stop()
-
         engineStatus = .stopped
         print("🛑 Audio engine stopped")
     }
 
     // MARK: - Source Management
 
-    /// Add a new audio source for the specified process
-    /// - Parameters:
-    ///   - processID: Process ID of the app
-    ///   - format: Audio format from the Core Audio Tap
-    /// - Throws: SpatialAudioEngineError if source creation fails
     func addSource(for processID: pid_t, format: AVAudioFormat) throws {
-        // Check for duplicate
         guard audioSources[processID] == nil else {
             throw SpatialAudioEngineError.sourceAlreadyExists(processID: processID)
         }
 
-        print("🔧 Adding audio source for process \(processID)")
-        print("   Tap format: \(format.sampleRate)Hz, \(format.channelCount)ch")
+        print("🔧 Adding source for PID \(processID) — \(format.sampleRate)Hz \(format.channelCount)ch")
 
-        // Create player node for this source
         let playerNode = AVAudioPlayerNode()
-
-        // Attach player node to engine
         engine.attach(playerNode)
 
-        // Create format converter if needed
         var converter: AVAudioConverter?
         var connectionFormat = format
 
-        // Check if format conversion is needed
         if !isFormatCompatible(format) {
-            print("   ⚡ Format mismatch - creating converter")
-            print("      From: \(format.sampleRate)Hz \(format.channelCount)ch")
-            print("      To: \(engineFormat.sampleRate)Hz \(engineFormat.channelCount)ch")
-
+            print("   ⚡ Format mismatch — creating converter to \(engineFormat.sampleRate)Hz")
             guard let conv = AVAudioConverter(from: format, to: engineFormat) else {
                 throw SpatialAudioEngineError.formatConversionFailed(
                     from: formatDescription(format),
                     to: formatDescription(engineFormat)
                 )
             }
-
             converter = conv
             connectionFormat = engineFormat
         }
 
-        // Connect: PlayerNode → EnvironmentNode
-        // This enables 3D spatial positioning for this source
-        engine.connect(
-            playerNode,
-            to: environmentNode,
-            format: connectionFormat
-        )
+        engine.connect(playerNode, to: environmentNode, format: connectionFormat)
 
-        // Create source node wrapper
         let sourceNode = AudioSourceNode(
             processID: processID,
             playerNode: playerNode,
@@ -206,168 +164,109 @@ class SpatialAudioEngine: ObservableObject {
             converter: converter
         )
 
-        // Configure default spatial positioning
-        // Use ambienceBed mode to preserve stereo information
         playerNode.sourceMode = .ambienceBed
-
-        // Default position: front-center
         playerNode.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
 
-        // Store source
+        // Update both dictionaries together while on main actor
         audioSources[processID] = sourceNode
+        sourceNodesForScheduling[processID] = sourceNode
         activeSourceCount = audioSources.count
 
-        // Start the player node if engine is running
         if engineStatus == .running && !playerNode.isPlaying {
             playerNode.play()
         }
 
-        print("✅ Audio source added for process \(processID)")
+        print("✅ Source added for PID \(processID)")
     }
 
-    /// Remove an audio source
-    /// - Parameter processID: Process ID of the app
     func removeSource(for processID: pid_t) {
         guard let sourceNode = audioSources.removeValue(forKey: processID) else {
-            print("⚠️ Attempted to remove non-existent source: \(processID)")
             return
         }
+        // Remove from scheduling dictionary before stopping the node so that
+        // any in-flight IOProc calls drop cleanly.
+        sourceNodesForScheduling.removeValue(forKey: processID)
 
-        // Stop the player node
         sourceNode.playerNode.stop()
-
-        // Detach from engine
         engine.detach(sourceNode.playerNode)
-
         activeSourceCount = audioSources.count
 
-        print("🗑️ Removed audio source for process \(processID)")
+        print("🗑️ Removed source for PID \(processID)")
     }
 
-    // MARK: - Buffer Scheduling
+    // MARK: - Buffer Scheduling (nonisolated — called from IOProc queue)
 
-    /// Schedule an audio buffer for playback
-    /// This method is THREAD-SAFE and can be called from Core Audio's IOProc queue
-    /// - Parameters:
-    ///   - buffer: The audio buffer to schedule
-    ///   - processID: Process ID of the source app
-    func scheduleBuffer(_ buffer: AVAudioPCMBuffer, for processID: pid_t) {
-        // Thread-safe access: audioSources dictionary is only modified on main thread
-        // This read operation is safe from any thread
-        guard let sourceNode = audioSources[processID] else {
-            // Source may have been removed - this is normal
-            return
-        }
+    /// Schedule an audio buffer for playback.
+    /// Marked nonisolated so calls from the Core Audio IOProc queue do NOT
+    /// hop to the main thread. Uses `sourceNodesForScheduling` (a shadow copy
+    /// of `audioSources`) which is safe to read without actor isolation.
+    nonisolated func scheduleBuffer(_ buffer: AVAudioPCMBuffer, for processID: pid_t) {
+        guard let sourceNode = sourceNodesForScheduling[processID] else { return }
 
-        // Check buffer queue depth to prevent memory buildup
-        // If consumer is slow, drop frames to maintain real-time behavior
+        // Backpressure: drop frames if the consumer (AVAudioEngine render thread) is slow
         let pending = sourceNode.scheduledBufferCount - sourceNode.renderedBufferCount
-        guard pending < 5 else {
-            // Queue is full - drop this buffer to prevent latency buildup
-            if pending == 5 {
-                print("⚠️ Buffer queue full for process \(processID) - dropping frames")
-            }
-            return
-        }
+        guard pending < 5 else { return }
 
-        // Convert format if needed
         let bufferToSchedule: AVAudioPCMBuffer
         if let converter = sourceNode.converter {
-            // Format conversion required
-            guard let convertedBuffer = convertBuffer(buffer, using: converter) else {
-                print("❌ Buffer conversion failed for process \(processID)")
-                return
-            }
-            bufferToSchedule = convertedBuffer
+            guard let converted = convertBuffer(buffer, using: converter) else { return }
+            bufferToSchedule = converted
         } else {
-            // No conversion needed - use original buffer
             bufferToSchedule = buffer
         }
 
-        // Schedule buffer for playback
-        // AVAudioPlayerNode.scheduleBuffer is thread-safe and can be called from any thread
-        // The completion handler tracks when the buffer has been rendered
         sourceNode.playerNode.scheduleBuffer(
             bufferToSchedule,
             completionCallbackType: .dataRendered
         ) { [weak self] _ in
-            // This runs on an internal AVAudioEngine thread
-            // Update counters to track queue depth
             self?.handleBufferCompleted(for: processID)
         }
 
-        // Update scheduled count (atomic increment is safe)
         sourceNode.scheduledBufferCount += 1
-
-        // Update @Published state on main thread only when needed
-        if sourceNode.scheduledBufferCount == 1 {
-            Task { @MainActor in
-                // First buffer scheduled - could update UI if needed
-            }
-        }
     }
 
-    /// Handle buffer completion callback
-    /// - Parameter processID: Process ID of the source
     private nonisolated func handleBufferCompleted(for processID: pid_t) {
-        // This is called from AVAudioEngine's internal thread
-        // Access to AudioSourceNode is thread-safe since counters are value types
-        // and dictionary is only modified on main thread
-        Task { @MainActor in
-            self.audioSources[processID]?.renderedBufferCount += 1
-        }
+        // Increment rendered counter without hopping to main actor
+        sourceNodesForScheduling[processID]?.renderedBufferCount += 1
     }
 
     // MARK: - Format Utilities
 
-    /// Check if a format is compatible with the engine format
     private func isFormatCompatible(_ format: AVAudioFormat) -> Bool {
-        return format.sampleRate == engineFormat.sampleRate &&
-               format.channelCount == engineFormat.channelCount &&
-               format.commonFormat == engineFormat.commonFormat
+        return format.sampleRate == engineFormat.sampleRate
+            && format.channelCount == engineFormat.channelCount
+            && format.commonFormat == engineFormat.commonFormat
     }
 
-    /// Create a human-readable format description
     private func formatDescription(_ format: AVAudioFormat) -> String {
-        return "\(format.sampleRate)Hz \(format.channelCount)ch \(format.commonFormat.rawValue)"
+        "\(format.sampleRate)Hz \(format.channelCount)ch"
     }
 
-    /// Convert an audio buffer using the provided converter
-    private func convertBuffer(
+    private nonisolated func convertBuffer(
         _ inputBuffer: AVAudioPCMBuffer,
         using converter: AVAudioConverter
     ) -> AVAudioPCMBuffer? {
-        // Calculate output buffer capacity
-        // Conversion ratio = outputSampleRate / inputSampleRate
         let ratio = converter.outputFormat.sampleRate / converter.inputFormat.sampleRate
         let outputCapacity = AVAudioFrameCount(Double(inputBuffer.frameLength) * ratio)
 
         guard let outputBuffer = AVAudioPCMBuffer(
             pcmFormat: converter.outputFormat,
             frameCapacity: outputCapacity
-        ) else {
-            return nil
-        }
+        ) else { return nil }
 
         var error: NSError?
-        // Capture inputBuffer in a local to satisfy Sendable requirements
         let capturedBuffer = inputBuffer
-        let status = converter.convert(to: outputBuffer, error: &error) { inNumPackets, outStatus in
+        let status = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
             outStatus.pointee = .haveData
             return capturedBuffer
         }
 
-        guard status != .error, error == nil else {
-            print("❌ Format conversion error: \(error?.localizedDescription ?? "unknown")")
-            return nil
-        }
-
+        guard status != .error, error == nil else { return nil }
         return outputBuffer
     }
 
     // MARK: - Configuration Changes
 
-    /// Observe audio configuration changes (device disconnection, sample rate changes)
     private func observeConfigurationChanges() {
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -380,43 +279,54 @@ class SpatialAudioEngine: ObservableObject {
         }
     }
 
-    /// Handle audio configuration changes by restarting the engine
+    /// Called when the audio hardware changes (headphones connected/disconnected, etc.)
+    ///
+    /// AVAudioEngine automatically stops itself and WIPES all node connections
+    /// on a configuration change. We must rebuild the entire graph before restarting.
     private func handleConfigurationChange() {
-        print("🔄 Audio configuration changed - restarting engine")
+        print("🔄 Audio configuration changed — rebuilding engine graph")
 
-        // Stop current playback
-        stop()
+        // Engine was auto-stopped by AVAudioEngine; update our tracked status.
+        engineStatus = .stopped
 
-        // Attempt to restart
+        // Stop and detach all source player nodes (their connections were wiped).
+        for sourceNode in audioSources.values {
+            sourceNode.playerNode.stop()
+            engine.detach(sourceNode.playerNode)
+        }
+
+        // Clear all sources. MenuBarView observes resetGeneration to clean up its UI.
+        audioSources.removeAll()
+        sourceNodesForScheduling.removeAll()
+        activeSourceCount = 0
+        resetGeneration += 1
+
+        // Rebuild the static graph (EnvironmentNode → MainMixer).
+        setupEngine()
+
+        // Restart the engine on the new device.
         do {
             try start()
-            print("✅ Engine restarted successfully")
+            print("✅ Engine restarted on new audio device")
         } catch {
-            engineStatus = .error("Failed to restart after configuration change")
-            print("❌ Failed to restart engine: \(error.localizedDescription)")
+            engineStatus = .error("Restart failed: \(error.localizedDescription)")
+            print("❌ Engine restart failed: \(error.localizedDescription)")
         }
     }
 }
 
 // MARK: - Audio Source Node
 
-/// Wrapper for an individual audio source with its associated nodes and state
 private class AudioSourceNode {
     let processID: pid_t
     let playerNode: AVAudioPlayerNode
     let format: AVAudioFormat
     let converter: AVAudioConverter?
 
-    /// Atomic counters for tracking buffer queue depth
     var scheduledBufferCount: Int = 0
     var renderedBufferCount: Int = 0
 
-    init(
-        processID: pid_t,
-        playerNode: AVAudioPlayerNode,
-        format: AVAudioFormat,
-        converter: AVAudioConverter?
-    ) {
+    init(processID: pid_t, playerNode: AVAudioPlayerNode, format: AVAudioFormat, converter: AVAudioConverter?) {
         self.processID = processID
         self.playerNode = playerNode
         self.format = format
