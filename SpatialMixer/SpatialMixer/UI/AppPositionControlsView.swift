@@ -80,21 +80,23 @@ struct AppPositionControlsView: View {
                     .foregroundColor(.secondary)
                     .frame(width: 26, alignment: .leading)
 
+                // Value label before the slider — Slider is layout-greedy and would
+                // otherwise consume the full row, pushing the label off screen.
+                Text("\(Int(currentDistance.rounded())) m")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .frame(width: 26, alignment: .leading)
+                    .monospacedDigit()
+
                 Slider(
                     value: Binding(
                         get: { Double(currentDistance) },
                         set: { spatialEngine.setDistance(Float($0), for: processID) }
                     ),
-                    in: 0.5...8.0,
+                    in: 1.0...10.0,
                     step: 0.5
                 )
                 .controlSize(.mini)
-
-                Text(String(format: "%.1f×", currentDistance))
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .frame(width: 30, alignment: .trailing)
-                    .monospacedDigit()
             }
         }
         .padding(.leading, 24) // indent to align with app name

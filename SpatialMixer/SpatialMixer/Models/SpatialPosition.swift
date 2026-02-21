@@ -36,11 +36,14 @@ enum SpatialPosition: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Returns the preset's direction vector scaled by `factor`.
-    /// Use this when combining a preset with the user's distance control.
-    func scaledPoint(by factor: Float) -> AVAudio3DPoint {
+    /// Returns a point at exactly `distance` meters from the listener in this preset's direction.
+    /// Normalizes the base vector first so the parameter maps directly to real distance units.
+    func scaledPoint(by distance: Float) -> AVAudio3DPoint {
         let p = point
-        return AVAudio3DPoint(x: p.x * factor, y: p.y * factor, z: p.z * factor)
+        let magnitude = sqrt(p.x * p.x + p.y * p.y + p.z * p.z)
+        guard magnitude > 0 else { return AVAudio3DPoint(x: 0, y: 0, z: -distance) }
+        let scale = distance / magnitude
+        return AVAudio3DPoint(x: p.x * scale, y: p.y * scale, z: p.z * scale)
     }
 
     /// Short label for compact preset buttons.

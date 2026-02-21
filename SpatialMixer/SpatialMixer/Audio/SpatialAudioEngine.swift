@@ -8,6 +8,7 @@
 import Foundation
 @preconcurrency import AVFoundation
 import Combine
+import CoreMotion
 import os
 
 private let logger = Logger(subsystem: "com.jqnchvz.SpatialMixer", category: "SpatialAudioEngine")
@@ -47,6 +48,8 @@ class SpatialAudioEngine: ObservableObject {
     @Published private(set) var sourceModes: [pid_t: AVAudio3DMixingSourceMode] = [:]
     /// Distance multiplier for each source (0.5 = subtle, 5.0 = very pronounced).
     @Published private(set) var sourceDistances: [pid_t: Float] = [:]
+    /// Whether AirPods head tracking is currently streaming orientation updates.
+    @Published private(set) var isHeadTrackingActive = false
 
     // MARK: - Audio Engine Components
 
@@ -68,6 +71,9 @@ class SpatialAudioEngine: ObservableObject {
     /// callback thread (scheduleBuffer / handleBufferCompleted).
     /// OSAllocatedUnfairLock is Sendable, so nonisolated methods can access it directly.
     private let sourcesLock = OSAllocatedUnfairLock<[pid_t: AudioSourceNode]>(initialState: [:])
+
+    /// Streams AirPods orientation for listener head tracking.
+    private let headphoneMotionManager = CMHeadphoneMotionManager()
 
     /// Configuration change observer
     private var configChangeObserver: NSObjectProtocol?
@@ -103,6 +109,18 @@ class SpatialAudioEngine: ObservableObject {
         // HRTF (Head-Related Transfer Function) — realistic 3D spatial rendering
         environmentNode.renderingAlgorithm = .HRTFHQ
 
+        // Distance attenuation: inverse model mirrors real-world physics.
+        // At referenceDistance (1 m) volume is 100%; at 2 m ~50%; at 4 m ~25%.
+        environmentNode.distanceAttenuationParameters.distanceAttenuationModel = .inverse
+        environmentNode.distanceAttenuationParameters.referenceDistance = 1.0
+        environmentNode.distanceAttenuationParameters.rolloffFactor = 1.0
+        environmentNode.distanceAttenuationParameters.maximumDistance = 20.0
+
+        // Room reverb: distant sources blend in room reflections.
+        environmentNode.reverbParameters.enable = true
+        environmentNode.reverbParameters.loadFactoryReverbPreset(.mediumRoom)
+        environmentNode.reverbParameters.level = -20.0  // dB; moderate, not overwhelming
+
         logger.info("🎵 Audio engine graph configured")
     }
 
@@ -132,6 +150,7 @@ class SpatialAudioEngine: ObservableObject {
         }
         engine.stop()
         engineStatus = .stopped
+        if isHeadTrackingActive { disableHeadTracking() }
         logger.info("🛑 Audio engine stopped")
     }
 
@@ -174,7 +193,8 @@ class SpatialAudioEngine: ObservableObject {
         )
 
         playerNode.sourceMode = .ambienceBed
-        playerNode.position = SpatialPosition.center.point
+        playerNode.position = SpatialPosition.center.scaledPoint(by: 2.0)
+        playerNode.reverbBlend = 0.0  // dry at 2 m; increases as distance grows
 
         let newCount = sourcesLock.withLock { (sources: inout [pid_t: AudioSourceNode]) -> Int in
             sources[processID] = sourceNode
@@ -183,7 +203,7 @@ class SpatialAudioEngine: ObservableObject {
         activeSourceCount = newCount
         sourcePresets[processID] = .center
         sourceModes[processID] = .ambienceBed
-        sourceDistances[processID] = 1.0
+        sourceDistances[processID] = 2.0
 
         if engineStatus == .running && !playerNode.isPlaying {
             playerNode.play()
@@ -222,15 +242,18 @@ class SpatialAudioEngine: ObservableObject {
         logger.info("📍 PID \(processID) → \(preset.rawValue) @ \(distance, privacy: .public)× (\(point.x, privacy: .public), \(point.y, privacy: .public), \(point.z, privacy: .public))")
     }
 
-    /// Adjust how far from the listener the source is placed.
-    /// Re-applies the current preset direction scaled by the new distance.
+    /// Adjust how far from the listener the source is placed (in meters).
+    /// Re-applies the current preset direction scaled by the new distance, and
+    /// blends in room reverb to reinforce the sense of distance.
     func setDistance(_ distance: Float, for processID: pid_t) {
         guard let sourceNode = sourcesLock.withLock({ $0[processID] }) else { return }
         let preset = sourcePresets[processID] ?? .center
         let point = preset.scaledPoint(by: distance)
         sourceNode.playerNode.position = point
+        // 0% reverb at 1 m, reaching 50% at 10 m — adds room-reflection cue to distance
+        sourceNode.playerNode.reverbBlend = min((distance - 1.0) / 18.0, 0.5)
         sourceDistances[processID] = distance
-        logger.info("📏 PID \(processID) distance → \(distance, privacy: .public)×")
+        logger.info("📏 PID \(processID) → \(distance, privacy: .public) m")
     }
 
     /// Set the spatial rendering mode for an audio source.
@@ -242,6 +265,41 @@ class SpatialAudioEngine: ObservableObject {
         sourceNode.playerNode.sourceMode = mode
         sourceModes[processID] = mode
         logger.info("🎙️ PID \(processID) mode → \(mode == .ambienceBed ? "ambienceBed" : "pointSource", privacy: .public)")
+    }
+
+    // MARK: - Head Tracking
+
+    /// Whether the connected headphones support motion updates.
+    var isHeadTrackingAvailable: Bool {
+        headphoneMotionManager.isDeviceMotionAvailable
+    }
+
+    /// Start streaming AirPods orientation into the listener's angular orientation.
+    /// Each motion update re-anchors the listener so sources appear fixed in world space.
+    func enableHeadTracking() {
+        guard headphoneMotionManager.isDeviceMotionAvailable,
+              !headphoneMotionManager.isDeviceMotionActive else { return }
+
+        headphoneMotionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, error in
+            guard let motion, error == nil else { return }
+            Task { @MainActor [weak self] in
+                self?.environmentNode.listenerAngularOrientation = AVAudio3DAngularOrientation(
+                    yaw:   Float(motion.attitude.yaw   * 180.0 / .pi),
+                    pitch: Float(motion.attitude.pitch * 180.0 / .pi),
+                    roll:  Float(motion.attitude.roll  * 180.0 / .pi)
+                )
+            }
+        }
+        isHeadTrackingActive = true
+        logger.info("🎧 Head tracking enabled")
+    }
+
+    /// Stop head tracking and reset the listener to the default forward orientation.
+    func disableHeadTracking() {
+        headphoneMotionManager.stopDeviceMotionUpdates()
+        environmentNode.listenerAngularOrientation = AVAudio3DAngularOrientation(yaw: 0, pitch: 0, roll: 0)
+        isHeadTrackingActive = false
+        logger.info("🎧 Head tracking disabled")
     }
 
     // MARK: - Buffer Scheduling (nonisolated — called from IOProc-adjacent callback thread)

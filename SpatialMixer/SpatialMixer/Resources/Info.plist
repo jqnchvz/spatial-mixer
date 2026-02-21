@@ -6,6 +6,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>SpatialMixer needs audio access to capture and spatialize sound from your applications.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>SpatialMixer uses AirPods motion data to keep spatial audio anchored as you move your head.</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundleDisplayName</key>

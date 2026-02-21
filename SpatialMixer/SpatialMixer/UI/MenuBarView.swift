@@ -153,10 +153,27 @@ struct MenuBarView: View {
                 Text("Settings")
                     .font(.subheadline)
                     .fontWeight(.medium)
-                
-                Text("Coming soon...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+
+                Toggle(isOn: Binding(
+                    get: { spatialEngine.isHeadTrackingActive },
+                    set: { enabled in
+                        if enabled { spatialEngine.enableHeadTracking() }
+                        else { spatialEngine.disableHeadTracking() }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Head Tracking")
+                            .font(.caption)
+                        Text(spatialEngine.isHeadTrackingAvailable
+                             ? "AirPods detected"
+                             : "Connect AirPods Pro or Max")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(!spatialEngine.isHeadTrackingAvailable)
             }
             
             Divider()
