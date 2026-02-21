@@ -11,7 +11,7 @@ import AVFoundation
 /// Compact position preset + source mode controls shown per captured app.
 struct AppPositionControlsView: View {
     let processID: pid_t
-    @ObservedObject var spatialEngine: SpatialAudioEngine
+    @EnvironmentObject var spatialEngine: SpatialAudioEngine
 
     private var selectedPreset: SpatialPosition {
         spatialEngine.sourcePresets[processID] ?? .center
