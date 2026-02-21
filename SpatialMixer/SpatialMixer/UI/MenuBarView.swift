@@ -154,13 +154,7 @@ struct MenuBarView: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
 
-                Toggle(isOn: Binding(
-                    get: { spatialEngine.isHeadTrackingActive },
-                    set: { enabled in
-                        if enabled { spatialEngine.enableHeadTracking() }
-                        else { spatialEngine.disableHeadTracking() }
-                    }
-                )) {
+                HStack {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Head Tracking")
                             .font(.caption)
@@ -170,10 +164,21 @@ struct MenuBarView: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
+                    Spacer()
+                    // Toggle switch isolated on the right so it always has room to render.
+                    // Embedding a VStack label inside Toggle gives it all available width,
+                    // leaving the switch with zero space in a constrained MenuBarExtra popover.
+                    Toggle("", isOn: Binding(
+                        get: { spatialEngine.isHeadTrackingActive },
+                        set: { enabled in
+                            if enabled { spatialEngine.enableHeadTracking() }
+                            else { spatialEngine.disableHeadTracking() }
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled(!spatialEngine.isHeadTrackingAvailable)
                 }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(!spatialEngine.isHeadTrackingAvailable)
             }
             
             Divider()
