@@ -21,6 +21,10 @@ struct AppPositionControlsView: View {
         spatialEngine.sourceModes[processID] == .pointSource
     }
 
+    private var currentDistance: Float {
+        spatialEngine.sourceDistances[processID] ?? 1.0
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             // Position presets
@@ -67,6 +71,30 @@ struct AppPositionControlsView: View {
                     .tint(isPointSource ? Color.accentColor : Color.secondary)
                     .controlSize(.mini)
                 }
+            }
+
+            // Distance control
+            HStack(spacing: 0) {
+                Text("Dist")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .frame(width: 26, alignment: .leading)
+
+                Slider(
+                    value: Binding(
+                        get: { Double(currentDistance) },
+                        set: { spatialEngine.setDistance(Float($0), for: processID) }
+                    ),
+                    in: 0.5...8.0,
+                    step: 0.5
+                )
+                .controlSize(.mini)
+
+                Text(String(format: "%.1f×", currentDistance))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .frame(width: 30, alignment: .trailing)
+                    .monospacedDigit()
             }
         }
         .padding(.leading, 24) // indent to align with app name

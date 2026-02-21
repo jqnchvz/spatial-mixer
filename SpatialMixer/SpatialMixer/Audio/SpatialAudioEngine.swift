@@ -45,6 +45,8 @@ class SpatialAudioEngine: ObservableObject {
     @Published private(set) var sourcePresets: [pid_t: SpatialPosition] = [:]
     /// Current source mode for each source, keyed by process ID.
     @Published private(set) var sourceModes: [pid_t: AVAudio3DMixingSourceMode] = [:]
+    /// Distance multiplier for each source (0.5 = subtle, 5.0 = very pronounced).
+    @Published private(set) var sourceDistances: [pid_t: Float] = [:]
 
     // MARK: - Audio Engine Components
 
@@ -181,6 +183,7 @@ class SpatialAudioEngine: ObservableObject {
         activeSourceCount = newCount
         sourcePresets[processID] = .center
         sourceModes[processID] = .ambienceBed
+        sourceDistances[processID] = 1.0
 
         if engineStatus == .running && !playerNode.isPlaying {
             playerNode.play()
@@ -201,6 +204,7 @@ class SpatialAudioEngine: ObservableObject {
         activeSourceCount = newCount
         sourcePresets.removeValue(forKey: processID)
         sourceModes.removeValue(forKey: processID)
+        sourceDistances.removeValue(forKey: processID)
 
         logger.info("🗑️ Removed source for PID \(processID)")
     }
@@ -208,11 +212,25 @@ class SpatialAudioEngine: ObservableObject {
     // MARK: - Spatial Positioning
 
     /// Move an audio source to a predefined position preset.
+    /// Applies the source's current distance multiplier when computing the 3D point.
     func setPreset(_ preset: SpatialPosition, for processID: pid_t) {
         guard let sourceNode = sourcesLock.withLock({ $0[processID] }) else { return }
-        sourceNode.playerNode.position = preset.point
+        let distance = sourceDistances[processID] ?? 1.0
+        let point = preset.scaledPoint(by: distance)
+        sourceNode.playerNode.position = point
         sourcePresets[processID] = preset
-        logger.info("📍 PID \(processID) → \(preset.rawValue) \(preset.point.x, privacy: .public), \(preset.point.y, privacy: .public), \(preset.point.z, privacy: .public)")
+        logger.info("📍 PID \(processID) → \(preset.rawValue) @ \(distance, privacy: .public)× (\(point.x, privacy: .public), \(point.y, privacy: .public), \(point.z, privacy: .public))")
+    }
+
+    /// Adjust how far from the listener the source is placed.
+    /// Re-applies the current preset direction scaled by the new distance.
+    func setDistance(_ distance: Float, for processID: pid_t) {
+        guard let sourceNode = sourcesLock.withLock({ $0[processID] }) else { return }
+        let preset = sourcePresets[processID] ?? .center
+        let point = preset.scaledPoint(by: distance)
+        sourceNode.playerNode.position = point
+        sourceDistances[processID] = distance
+        logger.info("📏 PID \(processID) distance → \(distance, privacy: .public)×")
     }
 
     /// Set the spatial rendering mode for an audio source.
@@ -332,6 +350,7 @@ class SpatialAudioEngine: ObservableObject {
         activeSourceCount = 0
         sourcePresets.removeAll()
         sourceModes.removeAll()
+        sourceDistances.removeAll()
         resetGeneration += 1
 
         // Rebuild the static graph (EnvironmentNode → MainMixer).
