@@ -168,20 +168,24 @@ SpatialMixer/
 - Keep views small and focused
 - Extract reusable components
 - Use `@StateObject` for ownership, `@ObservedObject` for passing
+- Use `onChange(of: value) { _, _ in }` two-parameter form — single-param `{ _ in }` is deprecated in macOS 14+
 - Leverage `@Published` for reactive state updates
 - Use proper view modifiers order (frame before padding, etc.)
 
 **Audio Processing:**
 - Never block the audio thread (real-time thread safety)
-- Use lock-free data structures in audio callbacks
+- Use `OSAllocatedUnfairLock<State>` for state shared between `@MainActor` and IOProc-adjacent callbacks — it's `Sendable` so `nonisolated` methods access it directly (macOS 13+, we target 14.4+)
+- `nonisolated(unsafe)` is a compiler escape hatch only — provides zero actual synchronization; never use it as a substitute for a real lock
 - Minimize allocations in audio processing code
 - Proper format conversion between taps and engine
 - Clean up audio resources (detach nodes, stop engine)
+- Always `engine.detach(node)` before throwing from a function that called `engine.attach(node)`
+- Always clean up taps in error paths — a missing `captureManager.removeTap(for:)` in a catch block creates a leaked active tap
 
 **Error Handling:**
 - Use `Result<Success, Failure>` for operations that can fail
 - Provide user-friendly error messages
-- Log errors with context (file, function, line)
+- Log with `os.Logger` (not `print`) — Logger integrates with Console.app, is faster, and avoids stdout lock contention in audio threads
 - Graceful degradation when features unavailable
 
 ### Permissions & Entitlements
@@ -370,6 +374,13 @@ If audio stutters or drops:
 4. Check CPU usage in Activity Monitor
 
 ### Xcode Build Issues
+
+**Quick build check (terminal):**
+```bash
+xcodebuild -project SpatialMixer/SpatialMixer.xcodeproj -scheme SpatialMixer -configuration Debug build 2>&1 | grep -E "error:|warning:|BUILD"
+```
+Note: SourceKit diagnostics in the IDE are often stale — always verify with a real build.
+
 If build fails:
 1. Clean build folder (Cmd+Shift+K)
 2. Clear DerivedData: `rm -rf ~/Library/Developer/Xcode/DerivedData`

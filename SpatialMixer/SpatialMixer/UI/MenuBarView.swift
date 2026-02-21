@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AVFoundation
+import os
 
 struct MenuBarView: View {
     @StateObject private var permissions = AudioPermissions()
@@ -158,7 +159,7 @@ struct MenuBarView: View {
         }
         .padding()
         .frame(width: 300)
-        .onChange(of: spatialEngine.resetGeneration) { _ in
+        .onChange(of: spatialEngine.resetGeneration) { _, _ in
             // Engine wiped all nodes on device change — clear captured UI state
             activeTapProcesses.removeAll()
             captureManager.removeAllTaps()
@@ -220,28 +221,39 @@ struct MenuBarView: View {
             // Set up buffer handler to pipe audio to engine
             let appName = app.name
             let processID = app.processID
-            var bufferCount = 0
+            // OSAllocatedUnfairLock<Bool> guards first-buffer logging across threads:
+            // tap.bufferHandler is called from the IOProc-adjacent callback thread.
+            let firstBufferLogged = OSAllocatedUnfairLock(initialState: false)
 
             tap.bufferHandler = { [weak spatialEngine] (buffer: AVAudioPCMBuffer) in
                 // Schedule buffer for spatial playback
                 // This is called from IOProc queue - scheduleBuffer is thread-safe
                 spatialEngine?.scheduleBuffer(buffer, for: processID)
 
-                bufferCount += 1
-                if bufferCount == 1 {
-                    print("✅ FIRST BUFFER RECEIVED for \(appName)!")
-                    print("   Format: \(buffer.format)")
-                    print("   Frame length: \(buffer.frameLength)")
-                    print("   Channel count: \(buffer.format.channelCount)")
-                    print("   Sample rate: \(buffer.format.sampleRate) Hz")
-                    print("   🎧 Audio now playing through spatial engine")
+                let isFirst = firstBufferLogged.withLock { (logged: inout Bool) -> Bool in
+                    guard !logged else { return false }
+                    logged = true
+                    return true
                 }
+                guard isFirst else { return }
+                print("✅ FIRST BUFFER RECEIVED for \(appName)!")
+                print("   Format: \(buffer.format)")
+                print("   Frame length: \(buffer.frameLength)")
+                print("   Channel count: \(buffer.format.channelCount)")
+                print("   Sample rate: \(buffer.format.sampleRate) Hz")
+                print("   🎧 Audio now playing through spatial engine")
             }
 
             activeTapProcesses.insert(app.processID)
             print("✓ Started tap for \(app.name) (PID: \(app.processID))")
 
         } catch {
+            // Clean up any tap created before the failure
+            captureManager.removeTap(for: app.processID)
+            // Stop engine if nothing is active (it may have been started in this call)
+            if activeTapProcesses.isEmpty {
+                spatialEngine.stop()
+            }
             engineError = error.localizedDescription
             print("✗ Failed to start tap for \(app.name): \(error.localizedDescription)")
         }
@@ -261,6 +273,7 @@ struct MenuBarView: View {
         // Stop engine if no more sources
         if activeTapProcesses.isEmpty {
             spatialEngine.stop()
+            engineError = nil
             print("🛑 Stopped engine (no active sources)")
         }
     }

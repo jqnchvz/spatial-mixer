@@ -8,6 +8,9 @@
 import Foundation
 @preconcurrency import AVFoundation
 import Combine
+import os
+
+private let logger = Logger(subsystem: "com.jqnchvz.SpatialMixer", category: "SpatialAudioEngine")
 
 /// Engine status states
 enum EngineStatus: Equatable {
@@ -54,14 +57,11 @@ class SpatialAudioEngine: ObservableObject {
 
     // MARK: - Source Management
 
-    /// Main-actor dictionary — only written from @MainActor context.
-    private var audioSources: [pid_t: AudioSourceNode] = [:]
-
-    /// Shadow dictionary for IOProc-queue reads in scheduleBuffer.
-    /// Written from @MainActor (add/remove source), read from IOProc queue.
-    /// The read/write windows don't overlap in practice (sources change rarely
-    /// compared to the continuous buffer scheduling rate).
-    nonisolated(unsafe) private var sourceNodesForScheduling: [pid_t: AudioSourceNode] = [:]
+    /// Thread-safe dictionary of audio sources.
+    /// Written from @MainActor (add/remove source) and read from the IOProc-adjacent
+    /// callback thread (scheduleBuffer / handleBufferCompleted).
+    /// OSAllocatedUnfairLock is Sendable, so nonisolated methods can access it directly.
+    private let sourcesLock = OSAllocatedUnfairLock<[pid_t: AudioSourceNode]>(initialState: [:])
 
     /// Configuration change observer
     private var configChangeObserver: NSObjectProtocol?
@@ -97,7 +97,7 @@ class SpatialAudioEngine: ObservableObject {
         // HRTF (Head-Related Transfer Function) — realistic 3D spatial rendering
         environmentNode.renderingAlgorithm = .HRTFHQ
 
-        print("🎵 Audio engine graph configured")
+        logger.info("🎵 Audio engine graph configured")
     }
 
     /// Start the audio engine
@@ -109,7 +109,7 @@ class SpatialAudioEngine: ObservableObject {
             engine.prepare()
             try engine.start()
             engineStatus = .running
-            print("✅ Audio engine started")
+            logger.info("✅ Audio engine started")
         } catch {
             engineStatus = .error(error.localizedDescription)
             throw SpatialAudioEngineError.engineStartFailed(underlying: error)
@@ -120,22 +120,24 @@ class SpatialAudioEngine: ObservableObject {
     func stop() {
         guard engineStatus == .running else { return }
 
-        for source in audioSources.values {
+        let sources = sourcesLock.withLock { Array($0.values) }
+        for source in sources {
             source.playerNode.stop()
         }
         engine.stop()
         engineStatus = .stopped
-        print("🛑 Audio engine stopped")
+        logger.info("🛑 Audio engine stopped")
     }
 
     // MARK: - Source Management
 
     func addSource(for processID: pid_t, format: AVAudioFormat) throws {
-        guard audioSources[processID] == nil else {
+        let alreadyExists = sourcesLock.withLock { $0[processID] != nil }
+        guard !alreadyExists else {
             throw SpatialAudioEngineError.sourceAlreadyExists(processID: processID)
         }
 
-        print("🔧 Adding source for PID \(processID) — \(format.sampleRate)Hz \(format.channelCount)ch")
+        logger.info("🔧 Adding source for PID \(processID) — \(format.sampleRate)Hz \(format.channelCount)ch")
 
         let playerNode = AVAudioPlayerNode()
         engine.attach(playerNode)
@@ -144,8 +146,9 @@ class SpatialAudioEngine: ObservableObject {
         var connectionFormat = format
 
         if !isFormatCompatible(format) {
-            print("   ⚡ Format mismatch — creating converter to \(engineFormat.sampleRate)Hz")
+            logger.debug("   ⚡ Format mismatch — creating converter to \(self.engineFormat.sampleRate)Hz")
             guard let conv = AVAudioConverter(from: format, to: engineFormat) else {
+                engine.detach(playerNode)
                 throw SpatialAudioEngineError.formatConversionFailed(
                     from: formatDescription(format),
                     to: formatDescription(engineFormat)
@@ -167,48 +170,48 @@ class SpatialAudioEngine: ObservableObject {
         playerNode.sourceMode = .ambienceBed
         playerNode.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
 
-        // Update both dictionaries together while on main actor
-        audioSources[processID] = sourceNode
-        sourceNodesForScheduling[processID] = sourceNode
-        activeSourceCount = audioSources.count
+        let newCount = sourcesLock.withLock { (sources: inout [pid_t: AudioSourceNode]) -> Int in
+            sources[processID] = sourceNode
+            return sources.count
+        }
+        activeSourceCount = newCount
 
         if engineStatus == .running && !playerNode.isPlaying {
             playerNode.play()
         }
 
-        print("✅ Source added for PID \(processID)")
+        logger.info("✅ Source added for PID \(processID)")
     }
 
     func removeSource(for processID: pid_t) {
-        guard let sourceNode = audioSources.removeValue(forKey: processID) else {
-            return
+        let result = sourcesLock.withLock { (sources: inout [pid_t: AudioSourceNode]) -> (AudioSourceNode, Int)? in
+            guard let node = sources.removeValue(forKey: processID) else { return nil }
+            return (node, sources.count)
         }
-        // Remove from scheduling dictionary before stopping the node so that
-        // any in-flight IOProc calls drop cleanly.
-        sourceNodesForScheduling.removeValue(forKey: processID)
+        guard let (sourceNode, newCount) = result else { return }
 
         sourceNode.playerNode.stop()
         engine.detach(sourceNode.playerNode)
-        activeSourceCount = audioSources.count
+        activeSourceCount = newCount
 
-        print("🗑️ Removed source for PID \(processID)")
+        logger.info("🗑️ Removed source for PID \(processID)")
     }
 
-    // MARK: - Buffer Scheduling (nonisolated — called from IOProc queue)
+    // MARK: - Buffer Scheduling (nonisolated — called from IOProc-adjacent callback thread)
 
     /// Schedule an audio buffer for playback.
-    /// Marked nonisolated so calls from the Core Audio IOProc queue do NOT
-    /// hop to the main thread. Uses `sourceNodesForScheduling` (a shadow copy
-    /// of `audioSources`) which is safe to read without actor isolation.
+    /// Marked nonisolated so calls from the Core Audio IOProc-adjacent callback do NOT
+    /// hop to the main actor. `sourcesLock` (OSAllocatedUnfairLock) is Sendable and
+    /// provides the necessary thread safety for the shared sources dictionary.
     nonisolated func scheduleBuffer(_ buffer: AVAudioPCMBuffer, for processID: pid_t) {
-        guard let sourceNode = sourceNodesForScheduling[processID] else { return }
+        guard let sourceNode = sourcesLock.withLock({ $0[processID] }) else { return }
 
         // Backpressure: drop frames if the consumer (AVAudioEngine render thread) is slow
-        let pending = sourceNode.scheduledBufferCount - sourceNode.renderedBufferCount
-        guard pending < 5 else { return }
+        guard sourceNode.pendingCount < 5 else { return }
 
         let bufferToSchedule: AVAudioPCMBuffer
         if let converter = sourceNode.converter {
+            // TODO(Phase 8): Use a pre-allocated buffer pool to avoid per-call allocation
             guard let converted = convertBuffer(buffer, using: converter) else { return }
             bufferToSchedule = converted
         } else {
@@ -222,12 +225,11 @@ class SpatialAudioEngine: ObservableObject {
             self?.handleBufferCompleted(for: processID)
         }
 
-        sourceNode.scheduledBufferCount += 1
+        sourceNode.incrementScheduled()
     }
 
     private nonisolated func handleBufferCompleted(for processID: pid_t) {
-        // Increment rendered counter without hopping to main actor
-        sourceNodesForScheduling[processID]?.renderedBufferCount += 1
+        sourcesLock.withLock { $0[processID]?.incrementRendered() }
     }
 
     // MARK: - Format Utilities
@@ -284,20 +286,20 @@ class SpatialAudioEngine: ObservableObject {
     /// AVAudioEngine automatically stops itself and WIPES all node connections
     /// on a configuration change. We must rebuild the entire graph before restarting.
     private func handleConfigurationChange() {
-        print("🔄 Audio configuration changed — rebuilding engine graph")
+        logger.info("🔄 Audio configuration changed — rebuilding engine graph")
 
         // Engine was auto-stopped by AVAudioEngine; update our tracked status.
         engineStatus = .stopped
 
         // Stop and detach all source player nodes (their connections were wiped).
-        for sourceNode in audioSources.values {
+        let allSources = sourcesLock.withLock { Array($0.values) }
+        for sourceNode in allSources {
             sourceNode.playerNode.stop()
             engine.detach(sourceNode.playerNode)
         }
 
         // Clear all sources. MenuBarView observes resetGeneration to clean up its UI.
-        audioSources.removeAll()
-        sourceNodesForScheduling.removeAll()
+        sourcesLock.withLock { $0.removeAll() }
         activeSourceCount = 0
         resetGeneration += 1
 
@@ -307,10 +309,10 @@ class SpatialAudioEngine: ObservableObject {
         // Restart the engine on the new device.
         do {
             try start()
-            print("✅ Engine restarted on new audio device")
+            logger.info("✅ Engine restarted on new audio device")
         } catch {
             engineStatus = .error("Restart failed: \(error.localizedDescription)")
-            print("❌ Engine restart failed: \(error.localizedDescription)")
+            logger.error("❌ Engine restart failed: \(error.localizedDescription)")
         }
     }
 }
@@ -323,8 +325,23 @@ private class AudioSourceNode {
     let format: AVAudioFormat
     let converter: AVAudioConverter?
 
-    var scheduledBufferCount: Int = 0
-    var renderedBufferCount: Int = 0
+    /// Protects scheduled/rendered buffer counts accessed from multiple threads:
+    /// - incrementScheduled: IOProc-adjacent callback thread (scheduleBuffer)
+    /// - incrementRendered: AVAudioEngine render completion callback
+    /// - pendingCount: IOProc-adjacent callback thread (backpressure check)
+    private let countLock = OSAllocatedUnfairLock(initialState: (scheduled: 0, rendered: 0))
+
+    var pendingCount: Int {
+        countLock.withLock { $0.scheduled - $0.rendered }
+    }
+
+    func incrementScheduled() {
+        countLock.withLock { $0.scheduled += 1 }
+    }
+
+    func incrementRendered() {
+        countLock.withLock { $0.rendered += 1 }
+    }
 
     init(processID: pid_t, playerNode: AVAudioPlayerNode, format: AVAudioFormat, converter: AVAudioConverter?) {
         self.processID = processID
