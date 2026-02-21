@@ -41,6 +41,10 @@ class SpatialAudioEngine: ObservableObject {
     /// Incremented each time a device change forces a full engine reset.
     /// MenuBarView observes this to clear its captured-source state.
     @Published private(set) var resetGeneration: Int = 0
+    /// Current position preset for each source, keyed by process ID.
+    @Published private(set) var sourcePresets: [pid_t: SpatialPosition] = [:]
+    /// Current source mode for each source, keyed by process ID.
+    @Published private(set) var sourceModes: [pid_t: AVAudio3DMixingSourceMode] = [:]
 
     // MARK: - Audio Engine Components
 
@@ -168,13 +172,15 @@ class SpatialAudioEngine: ObservableObject {
         )
 
         playerNode.sourceMode = .ambienceBed
-        playerNode.position = AVAudio3DPoint(x: 0, y: 0, z: -1)
+        playerNode.position = SpatialPosition.center.point
 
         let newCount = sourcesLock.withLock { (sources: inout [pid_t: AudioSourceNode]) -> Int in
             sources[processID] = sourceNode
             return sources.count
         }
         activeSourceCount = newCount
+        sourcePresets[processID] = .center
+        sourceModes[processID] = .ambienceBed
 
         if engineStatus == .running && !playerNode.isPlaying {
             playerNode.play()
@@ -193,8 +199,31 @@ class SpatialAudioEngine: ObservableObject {
         sourceNode.playerNode.stop()
         engine.detach(sourceNode.playerNode)
         activeSourceCount = newCount
+        sourcePresets.removeValue(forKey: processID)
+        sourceModes.removeValue(forKey: processID)
 
         logger.info("🗑️ Removed source for PID \(processID)")
+    }
+
+    // MARK: - Spatial Positioning
+
+    /// Move an audio source to a predefined position preset.
+    func setPreset(_ preset: SpatialPosition, for processID: pid_t) {
+        guard let sourceNode = sourcesLock.withLock({ $0[processID] }) else { return }
+        sourceNode.playerNode.position = preset.point
+        sourcePresets[processID] = preset
+        logger.info("📍 PID \(processID) → \(preset.rawValue) \(preset.point.x, privacy: .public), \(preset.point.y, privacy: .public), \(preset.point.z, privacy: .public)")
+    }
+
+    /// Set the spatial rendering mode for an audio source.
+    ///
+    /// - `.ambienceBed`: Stereo-preserving, subtle directional effect. Good for music.
+    /// - `.pointSource`:  Mono, precise HRTF directional placement. Good for effects/voices.
+    func setSourceMode(_ mode: AVAudio3DMixingSourceMode, for processID: pid_t) {
+        guard let sourceNode = sourcesLock.withLock({ $0[processID] }) else { return }
+        sourceNode.playerNode.sourceMode = mode
+        sourceModes[processID] = mode
+        logger.info("🎙️ PID \(processID) mode → \(mode == .ambienceBed ? "ambienceBed" : "pointSource", privacy: .public)")
     }
 
     // MARK: - Buffer Scheduling (nonisolated — called from IOProc-adjacent callback thread)
@@ -301,6 +330,8 @@ class SpatialAudioEngine: ObservableObject {
         // Clear all sources. MenuBarView observes resetGeneration to clean up its UI.
         sourcesLock.withLock { $0.removeAll() }
         activeSourceCount = 0
+        sourcePresets.removeAll()
+        sourceModes.removeAll()
         resetGeneration += 1
 
         // Rebuild the static graph (EnvironmentNode → MainMixer).
@@ -321,7 +352,8 @@ class SpatialAudioEngine: ObservableObject {
 
 private class AudioSourceNode {
     let processID: pid_t
-    let playerNode: AVAudioPlayerNode
+    /// `nonisolated let` — constant after init, safe to read from any thread.
+    nonisolated let playerNode: AVAudioPlayerNode
     let format: AVAudioFormat
     let converter: AVAudioConverter?
 
@@ -331,15 +363,15 @@ private class AudioSourceNode {
     /// - pendingCount: IOProc-adjacent callback thread (backpressure check)
     private let countLock = OSAllocatedUnfairLock(initialState: (scheduled: 0, rendered: 0))
 
-    var pendingCount: Int {
+    nonisolated var pendingCount: Int {
         countLock.withLock { $0.scheduled - $0.rendered }
     }
 
-    func incrementScheduled() {
+    nonisolated func incrementScheduled() {
         countLock.withLock { $0.scheduled += 1 }
     }
 
-    func incrementRendered() {
+    nonisolated func incrementRendered() {
         countLock.withLock { $0.rendered += 1 }
     }
 
