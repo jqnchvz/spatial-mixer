@@ -119,6 +119,10 @@ class AudioTap {
             stereoMixdownOfProcesses: [processObjectID]
         )
 
+        // Mute the process in the system mix so audio routes exclusively
+        // through SpatialMixer's AVAudioEngine (prevents doubling)
+        tapDescription.muteBehavior = .muted
+
         // CRITICAL: Set UUID explicitly (AudioCap does this)
         let uuid = UUID()
         tapDescription.uuid = uuid
@@ -197,8 +201,8 @@ class AudioTap {
             mElement: kAudioObjectPropertyElementMain
         )
 
-        var outputUID: CFString?
-        var outputUIDSize = UInt32(MemoryLayout<CFString>.size)
+        var outputUID: Unmanaged<CFString>?
+        var outputUIDSize = UInt32(MemoryLayout<Unmanaged<CFString>>.size)
         status = AudioObjectGetPropertyData(
             defaultOutputID,
             &deviceUIDAddress,
@@ -208,7 +212,7 @@ class AudioTap {
             &outputUID
         )
 
-        guard status == noErr, let outputDeviceUID = outputUID as String? else {
+        guard status == noErr, let outputDeviceUID = outputUID?.takeRetainedValue() as String? else {
             throw AudioTapError.deviceNotFound
         }
 
@@ -296,9 +300,10 @@ class AudioTap {
                     }
                 }
 
-                DispatchQueue.main.async {
-                    handler(pcmBuffer)
-                }
+                // Call handler directly from IOProc queue
+                // Handler (SpatialAudioEngine.scheduleBuffer) is thread-safe
+                // This reduces latency by ~10-20ms compared to dispatching to main
+                handler(pcmBuffer)
             }
         }
 
