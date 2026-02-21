@@ -73,21 +73,20 @@ struct AppPositionControlsView: View {
                 }
             }
 
-            // Distance control
-            HStack(spacing: 0) {
-                Text("Dist")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .frame(width: 26, alignment: .leading)
-
-                // Value label before the slider — Slider is layout-greedy and would
-                // otherwise consume the full row, pushing the label off screen.
-                Text("\(Int(currentDistance.rounded())) m")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .frame(width: 26, alignment: .leading)
-                    .monospacedDigit()
-
+            // Distance control — label/value row above, full-width slider below.
+            // Keeping the Slider in its own row avoids the HStack space-competition
+            // that makes it invisible or pushes the value label off-screen.
+            VStack(spacing: 2) {
+                HStack {
+                    Text("Dist")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("\(Int(currentDistance.rounded())) m")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
                 Slider(
                     value: Binding(
                         get: { Double(currentDistance) },
@@ -96,7 +95,7 @@ struct AppPositionControlsView: View {
                     in: 1.0...10.0,
                     step: 0.5
                 )
-                .controlSize(.mini)
+                .controlSize(.small)
             }
         }
         .padding(.leading, 24) // indent to align with app name
