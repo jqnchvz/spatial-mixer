@@ -107,7 +107,13 @@ class SpatialAudioEngine: ObservableObject {
     private func setupEngine() {
         phaseListener = PHASEListener(engine: phaseEngine)
         phaseListener.transform = matrix_identity_float4x4
-        try? phaseEngine.rootObject.addChild(phaseListener)
+        do {
+            try phaseEngine.rootObject.addChild(phaseListener)
+        } catch {
+            logger.error("❌ Failed to attach listener to scene: \(error.localizedDescription)")
+            engineStatus = .error("Listener setup failed")
+            return
+        }
 
         setupRoomGeometry()
         logger.info("🎵 PHASE engine configured with early-reflections room")
@@ -129,9 +135,12 @@ class SpatialAudioEngine: ObservableObject {
         let material = PHASEMaterial(engine: phaseEngine, preset: .concrete)
         let shape = PHASEShape(engine: phaseEngine, mesh: mesh, materials: [material])
         let occluder = PHASEOccluder(engine: phaseEngine, shapes: [shape])
-        try? phaseEngine.rootObject.addChild(occluder)
-
-        logger.debug("📦 Room geometry: 5×4×5 m concrete box")
+        do {
+            try phaseEngine.rootObject.addChild(occluder)
+            logger.debug("📦 Room geometry: 5×4×5 m concrete box")
+        } catch {
+            logger.error("❌ Failed to attach room geometry — early reflections disabled: \(error.localizedDescription)")
+        }
     }
 
     /// Start the PHASE audio engine.
@@ -257,8 +266,7 @@ class SpatialAudioEngine: ObservableObject {
             source: source,
             soundEvent: soundEvent,
             pushStreamNode: pushStreamNode,
-            converter: converter,
-            format: format
+            converter: converter
         )
 
         let newCount = sourcesLock.withLock { (sources: inout [pid_t: PHASESourceNode]) -> Int in
@@ -319,6 +327,7 @@ class SpatialAudioEngine: ObservableObject {
     /// Store the spatial rendering mode for UI display.
     /// PHASE pipeline is stereo for all sources in this version.
     func setSourceMode(_ mode: AVAudio3DMixingSourceMode, for processID: pid_t) {
+        guard sourcesLock.withLock({ $0[processID] != nil }) else { return }
         // TODO(SPAT-40): implement mode-specific pipelines (pointSource = mono, ambienceBed = stereo)
         sourceModes[processID] = mode
         logger.info("🎙️ PID \(processID) mode → \(mode == .ambienceBed ? "ambienceBed" : "pointSource", privacy: .public) (stored; pipeline unchanged)")
@@ -454,7 +463,6 @@ private class PHASESourceNode: @unchecked Sendable {
     /// constant after init, safe to read from the IOProc-adjacent callback thread.
     nonisolated let pushStreamNode: PHASEPushStreamNode
     let converter: AVAudioConverter?
-    let format: AVAudioFormat
 
     /// Protects scheduled/rendered buffer counts accessed from multiple threads:
     /// - incrementScheduled: IOProc-adjacent callback thread (scheduleBuffer)
@@ -478,13 +486,11 @@ private class PHASESourceNode: @unchecked Sendable {
         source: PHASESource,
         soundEvent: PHASESoundEvent,
         pushStreamNode: PHASEPushStreamNode,
-        converter: AVAudioConverter?,
-        format: AVAudioFormat
+        converter: AVAudioConverter?
     ) {
         self.source = source
         self.soundEvent = soundEvent
         self.pushStreamNode = pushStreamNode
         self.converter = converter
-        self.format = format
     }
 }
