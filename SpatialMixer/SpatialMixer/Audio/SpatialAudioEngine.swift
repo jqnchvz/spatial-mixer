@@ -232,7 +232,7 @@ class SpatialAudioEngine: ObservableObject {
             throw SpatialAudioEngineError.phaseSoundEventCreationFailed(processID: processID)
         }
 
-        // 4. Create and start sound event (binds source → listener via spatial mixer).
+        // 4. Create sound event (binds source → listener via spatial mixer).
         let mixerParams = PHASEMixerParameters()
         mixerParams.addSpatialMixerParameters(
             identifier: mixerDef.identifier,
@@ -247,15 +247,36 @@ class SpatialAudioEngine: ObservableObject {
                 assetIdentifier: "event-\(processID)",
                 mixerParameters: mixerParams
             )
-            try soundEvent.start()
         } catch {
             phaseEngine.rootObject.removeChild(source)
             phaseEngine.assetRegistry.unregisterAsset(identifier: "event-\(processID)", completion: nil)
             throw SpatialAudioEngineError.phaseSoundEventCreationFailed(processID: processID)
         }
 
-        // 5. Retrieve the push stream node (strong reference stored in PHASESourceNode).
+        // 5. Retrieve push stream node BEFORE start() so we can prime the queue.
+        //    PHASESoundEvent.pushStreamNodes is populated at event creation, not at start.
         guard let pushStreamNode = soundEvent.pushStreamNodes[streamIdentifier] else {
+            soundEvent.stopAndInvalidate()
+            phaseEngine.rootObject.removeChild(source)
+            phaseEngine.assetRegistry.unregisterAsset(identifier: "event-\(processID)", completion: nil)
+            throw SpatialAudioEngineError.phaseSoundEventCreationFailed(processID: processID)
+        }
+
+        // 6. Prime the push stream queue with silence before start().
+        //    PHASE's IOThread (com.apple.audio.IOThread.client) begins rendering the
+        //    moment start() returns. If the queue is empty on the very first render cycle
+        //    it dereferences a null "current buffer" pointer → EXC_BAD_ACCESS at 0x1.
+        //    Scheduling 4096 frames of silence (85 ms) guarantees the queue is non-empty
+        //    before the IOThread fires, with no perceptible impact on playback latency.
+        if let primeBuffer = AVAudioPCMBuffer(pcmFormat: engineFormat, frameCapacity: 4096) {
+            primeBuffer.frameLength = 4096
+            pushStreamNode.scheduleBuffer(buffer: primeBuffer)
+        }
+
+        // 7. Start sound event now that the queue is primed.
+        do {
+            try soundEvent.start()
+        } catch {
             soundEvent.stopAndInvalidate()
             phaseEngine.rootObject.removeChild(source)
             phaseEngine.assetRegistry.unregisterAsset(identifier: "event-\(processID)", completion: nil)
@@ -410,6 +431,7 @@ class SpatialAudioEngine: ObservableObject {
         return format.sampleRate == engineFormat.sampleRate
             && format.channelCount == engineFormat.channelCount
             && format.commonFormat == engineFormat.commonFormat
+            && !format.isInterleaved    // engineFormat is non-interleaved; interleaved taps must be converted
     }
 
     private func formatDescription(_ format: AVAudioFormat) -> String {
