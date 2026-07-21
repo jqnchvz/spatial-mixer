@@ -74,10 +74,13 @@ git checkout -b SPAT-XX-description
 
 #### 5. Creating a Pull Request
 
+**⚠️ Before opening a PR, commit and push all local changes.** Any uncommitted fixes stay behind when the branch is merged and must be applied to `main` separately via cherry-pick — always verify with `git status` before creating the PR.
+
 When the task is complete:
 
-1. **Push your branch** to GitHub
-2. **Create a Pull Request** with:
+1. **Commit all changes** — run `git status` to confirm nothing is uncommitted
+2. **Push your branch** to GitHub
+3. **Create a Pull Request** with:
    - Title format: `[SPAT-XX] Brief description`
    - Description including: What was implemented, testing done, any notes
    - Link to the Jira task

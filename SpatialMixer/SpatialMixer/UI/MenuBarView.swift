@@ -98,37 +98,47 @@ struct MenuBarView: View {
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(processDiscovery.runningApps) { app in
-                        HStack(spacing: 8) {
-                            Image(nsImage: app.icon)
-                                .resizable()
-                                .frame(width: 16, height: 16)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 8) {
+                                Image(nsImage: app.icon)
+                                    .resizable()
+                                    .frame(width: 16, height: 16)
 
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(app.name)
-                                    .font(.caption)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(app.name)
+                                        .font(.caption)
 
+                                    if activeTapProcesses.contains(app.processID) {
+                                        Text("🎧 Capturing")
+                                            .font(.caption2)
+                                            .foregroundColor(.green)
+                                    }
+                                }
+
+                                Spacer()
+
+                                // Tap control button
                                 if activeTapProcesses.contains(app.processID) {
-                                    Text("🎧 Capturing")
-                                        .font(.caption2)
-                                        .foregroundColor(.green)
+                                    Button("Stop") {
+                                        stopTap(for: app.processID)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption2)
+                                } else {
+                                    Button("Capture") {
+                                        startTap(for: app)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption2)
                                 }
                             }
 
-                            Spacer()
-
-                            // Tap control button
+                            // Spatial controls — shown only while capturing
                             if activeTapProcesses.contains(app.processID) {
-                                Button("Stop") {
-                                    stopTap(for: app.processID)
-                                }
-                                .buttonStyle(.borderless)
-                                .font(.caption2)
-                            } else {
-                                Button("Capture") {
-                                    startTap(for: app)
-                                }
-                                .buttonStyle(.borderless)
-                                .font(.caption2)
+                                AppPositionControlsView(
+                                    processID: app.processID,
+                                    spatialEngine: spatialEngine
+                                )
                             }
                         }
                         .padding(.vertical, 2)
@@ -143,10 +153,32 @@ struct MenuBarView: View {
                 Text("Settings")
                     .font(.subheadline)
                     .fontWeight(.medium)
-                
-                Text("Coming soon...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Head Tracking")
+                            .font(.caption)
+                        Text(spatialEngine.isHeadTrackingAvailable
+                             ? "AirPods detected"
+                             : "Connect AirPods Pro or Max")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    // Toggle switch isolated on the right so it always has room to render.
+                    // Embedding a VStack label inside Toggle gives it all available width,
+                    // leaving the switch with zero space in a constrained MenuBarExtra popover.
+                    Toggle("", isOn: Binding(
+                        get: { spatialEngine.isHeadTrackingActive },
+                        set: { enabled in
+                            if enabled { spatialEngine.enableHeadTracking() }
+                            else { spatialEngine.disableHeadTracking() }
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled(!spatialEngine.isHeadTrackingAvailable)
+                }
             }
             
             Divider()
