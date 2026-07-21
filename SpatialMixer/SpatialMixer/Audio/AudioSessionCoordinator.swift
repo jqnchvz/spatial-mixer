@@ -39,8 +39,10 @@ class AudioSessionCoordinator: ObservableObject {
     // MARK: - Init
 
     init() {
-        // When the audio device changes, AVAudioEngine wipes all nodes and fires
-        // resetGeneration. Clear captured UI state to match.
+        // PHASEEngine handles device changes (headphone connect/disconnect) internally —
+        // sources survive reconnects without a graph rebuild, so resetGeneration is not
+        // incremented on hardware events. This subscriber is retained as a safety valve
+        // for any future code that manually triggers a full engine reset.
         spatialEngine.$resetGeneration
             .dropFirst()
             .sink { [weak self] _ in
